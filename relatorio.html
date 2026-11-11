@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Relatório - Desafio Final OpenMP</title>
+<style>
+  @page { size: A4; margin: 16mm 16mm 16mm 16mm; }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.5pt; color: #111; background: #fff; line-height: 1.38; }
+  h1 { font-size: 16pt; margin: 0 0 2px; }
+  h2 { font-size: 12pt; margin: 16px 0 6px; border-bottom: 1.5px solid #c8102e; padding-bottom: 2px; color: #c8102e; }
+  .sub { color: #444; margin-bottom: 10px; }
+  table { border-collapse: collapse; margin: 6px 0 8px; font-size: 9.5pt; }
+  th, td { border: 1px solid #bbb; padding: 3px 7px; text-align: right; }
+  th { background: #f1f1f1; }
+  td.l, th.l { text-align: left; }
+  code, pre { font-family: Consolas, "Courier New", monospace; font-size: 9pt; }
+  pre { background: #f6f6f6; border: 1px solid #ddd; padding: 6px 8px; margin: 6px 0; white-space: pre-wrap; }
+  .destaque { background: #fff4d6; border: 1px solid #e6c870; padding: 6px 10px; margin: 8px 0; }
+  .lado { display: flex; gap: 18px; align-items: flex-start; }
+  .ruim { color: #b00020; font-weight: 600; }
+  ul { margin: 4px 0; padding-left: 20px; }
+  .pq { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<h1>Exercício Final: Análise de Dados com OpenMP</h1>
+<div class="sub">Coeficiente de variação para dados agrupados em classes · Programação Paralela (CCO085) · IESB<br>
+Aluno(s): ______________________________________________</div>
+
+<h2>1. O que o programa faz</h2>
+<p>O programa <code>cv_openmp.cpp</code> lê um arquivo texto com a <b>estatura (cm)</b> e o <b>peso (kg)</b> de 1000 pessoas
+(uma pessoa por linha, separadas por espaço), agrupa os valores em classes de <b>8 cm</b> e de <b>4 kg</b> e calcula, para cada variável:</p>
+<ul>
+  <li>Média ponderada: µ = Σ(x<sub>i</sub>·f<sub>i</sub>) / N</li>
+  <li>Desvio padrão populacional: σ = √( Σ f<sub>i</sub>·(x<sub>i</sub> − µ)² / N )</li>
+  <li>Coeficiente de variação: CV = (σ / µ) × 100%</li>
+</ul>
+<p>x<sub>i</sub> é o ponto médio da classe i e f<sub>i</sub> é a sua frequência. A primeira classe começa no menor valor, arredondado para baixo.
+Como o arquivo de dados não veio com o enunciado, o programa <code>gerar_dados.cpp</code> cria um arquivo com valores realistas
+(estatura com média 170 cm e desvio de 10 cm; peso obtido de um IMC com média 24). A semente é fixa, então o arquivo é sempre o mesmo.</p>
+<p>O programa tem duas versões do mesmo cálculo: <code>calcular_sequencial()</code> e <code>calcular_paralelo()</code>.
+Ele confere se as duas dão o mesmo resultado e mede o tempo de cada uma.</p>
+
+<h2>2. O que foi paralelizado e por quê</h2>
+<table>
+  <tr><th class="l">Etapa</th><th class="l">Tamanho do laço</th><th class="l">Diretiva OpenMP</th><th class="l">Por quê</th></tr>
+  <tr><td class="l">Menor e maior valor</td><td class="l">N pessoas</td><td class="l"><code>parallel for reduction(min:menor) reduction(max:maior)</code></td>
+      <td class="l">Todas as threads atualizariam as mesmas duas variáveis. Com a reduction, cada thread usa uma cópia privada e o OpenMP compara as cópias no final.</td></tr>
+  <tr><td class="l">Frequência de cada classe (soma das pessoas por classe)</td><td class="l">N pessoas<br><b>(o laço mais pesado)</b></td>
+      <td class="l"><code>parallel</code> + <code>for schedule(static) nowait</code> + <code>critical</code></td>
+      <td class="l"><code>freq[classe]++</code> em paralelo é condição de corrida. Cada thread conta num vetor próprio (<code>freq_local</code>) e só no fim soma no vetor geral, dentro de um <code>critical</code>.
+      Assim o critical roda poucas vezes por thread, e não uma vez por pessoa. É a mesma ideia da reduction: cada mesário conta os votos da sua urna.</td></tr>
+  <tr><td class="l">Soma da média Σ x<sub>i</sub>·f<sub>i</sub></td><td class="l">k classes (~10)</td><td class="l"><code>parallel for reduction(+:soma)</code></td>
+      <td class="l">A soma é a operação típica de reduction. O laço é muito curto (uma iteração por classe), então o ganho aqui é desprezível.</td></tr>
+  <tr><td class="l">Soma do desvio Σ f<sub>i</sub>·(x<sub>i</sub> − µ)²</td><td class="l">k classes (~10)</td><td class="l"><code>parallel for reduction(+:soma_desvios)</code></td>
+      <td class="l">Mesmo motivo. Fica numa região paralela separada porque depende da média, que precisa estar pronta antes.</td></tr>
+</table>
+<p>As outras variáveis do laço não precisam de proteção. Os vetores de entrada são compartilhados, mas só são lidos.
+O índice <code>i</code> e o que é declarado dentro do laço (<code>classe</code>, <code>d</code>) são privados de cada thread.
+O <code>schedule(static)</code> foi escolhido porque toda pessoa custa o mesmo (uma divisão e um incremento), e por isso não há desbalanceamento a corrigir.
+A leitura do arquivo ficou sequencial, porque as linhas são lidas uma depois da outra.</p>
+
+<h2>3. Resultados obtidos (1000 pessoas)</h2>
+<div class="lado">
+<table>
+  <tr><th colspan="3">Estatura (classes de 8 cm)</th></tr>
+  <tr><th>classe (cm)</th><th>x<sub>i</sub></th><th>f<sub>i</sub></th></tr>
+  <tr><td>[140, 148)</td><td>144</td><td>17</td></tr>
+  <tr><td>[148, 156)</td><td>152</td><td>63</td></tr>
+  <tr><td>[156, 164)</td><td>160</td><td>210</td></tr>
+  <tr><td>[164, 172)</td><td>168</td><td>293</td></tr>
+  <tr><td>[172, 180)</td><td>176</td><td>260</td></tr>
+  <tr><td>[180, 188)</td><td>184</td><td>122</td></tr>
+  <tr><td>[188, 196)</td><td>192</td><td>32</td></tr>
+  <tr><td>[196, 204)</td><td>200</td><td>3</td></tr>
+  <tr><th colspan="2" class="l">Total N</th><th>1000</th></tr>
+</table>
+<table>
+  <tr><th colspan="3">Peso (classes de 4 kg)</th></tr>
+  <tr><th>classe (kg)</th><th>x<sub>i</sub></th><th>f<sub>i</sub></th></tr>
+  <tr><td>[34, 38)</td><td>36</td><td>4</td></tr><tr><td>[38, 42)</td><td>40</td><td>3</td></tr>
+  <tr><td>[42, 46)</td><td>44</td><td>17</td></tr><tr><td>[46, 50)</td><td>48</td><td>37</td></tr>
+  <tr><td>[50, 54)</td><td>52</td><td>59</td></tr><tr><td>[54, 58)</td><td>56</td><td>78</td></tr>
+  <tr><td>[58, 62)</td><td>60</td><td>112</td></tr><tr><td>[62, 66)</td><td>64</td><td>103</td></tr>
+  <tr><td>[66, 70)</td><td>68</td><td>123</td></tr><tr><td>[70, 74)</td><td>72</td><td>114</td></tr>
+</table>
+<table>
+  <tr><th colspan="3">Peso (cont.)</th></tr>
+  <tr><th>classe (kg)</th><th>x<sub>i</sub></th><th>f<sub>i</sub></th></tr>
+  <tr><td>[74, 78)</td><td>76</td><td>101</td></tr><tr><td>[78, 82)</td><td>80</td><td>96</td></tr>
+  <tr><td>[82, 86)</td><td>84</td><td>54</td></tr><tr><td>[86, 90)</td><td>88</td><td>47</td></tr>
+  <tr><td>[90, 94)</td><td>92</td><td>21</td></tr><tr><td>[94, 98)</td><td>96</td><td>15</td></tr>
+  <tr><td>[98, 102)</td><td>100</td><td>5</td></tr><tr><td>[102, 106)</td><td>104</td><td>5</td></tr>
+  <tr><td>[106, 110)</td><td>108</td><td>5</td></tr><tr><td>[110, 114)</td><td>112</td><td>1</td></tr>
+</table>
+</div>
+<table>
+  <tr><th class="l">Variável</th><th>Média µ</th><th>Desvio padrão σ</th><th>Coeficiente de variação</th></tr>
+  <tr><td class="l">Estatura</td><td>169,80 cm</td><td>10,2711 cm</td><td><b>6,05 %</b></td></tr>
+  <tr><td class="l">Peso</td><td>69,18 kg</td><td>12,8424 kg</td><td><b>18,56 %</b></td></tr>
+</table>
+<p>O peso varia proporcionalmente <b>três vezes mais</b> que a estatura. O CV permite essa comparação porque não tem unidade: cm e kg não podem ser comparados diretamente, mas porcentagens podem.
+A versão paralela deu exatamente as mesmas frequências e o mesmo CV com 1, 2, 4, 8 e 16 threads.</p>
+
+<h2 class="pq">4. Análise de desempenho</h2>
+<p>Ambiente: AMD Ryzen 7 5700X3D (8 núcleos físicos, 16 lógicos), Ubuntu 24.04 em contêiner Docker, g++ 13.3 com <code>-O2 -fopenmp</code>.
+Cada tempo é a mediana de 11 execuções, depois de 1 execução de aquecimento descartada.
+Speedup = tempo sequencial ÷ tempo paralelo. Eficiência = speedup ÷ número de threads.</p>
+
+<div class="lado pq">
+<div>
+<b>a) Os 1000 dados do exercício</b>
+<table>
+  <tr><th>versão</th><th>threads</th><th>tempo (ms)</th><th>speedup</th></tr>
+  <tr><td class="l">sequencial</td><td>1</td><td>0,0036</td><td>1,00</td></tr>
+  <tr><td class="l">paralela</td><td>1</td><td>0,0076</td><td class="ruim">0,48</td></tr>
+  <tr><td class="l">paralela</td><td>2</td><td>0,0101</td><td class="ruim">0,36</td></tr>
+  <tr><td class="l">paralela</td><td>4</td><td>0,0088</td><td class="ruim">0,41</td></tr>
+  <tr><td class="l">paralela</td><td>8</td><td>0,0124</td><td class="ruim">0,29</td></tr>
+  <tr><td class="l">paralela</td><td>16</td><td>0,0335</td><td class="ruim">0,11</td></tr>
+</table>
+</div>
+<div>
+<b>b) Dados repetidos 10 000× (10 milhões de pessoas)</b>
+<table>
+  <tr><th>versão</th><th>threads</th><th>tempo (ms)</th><th>speedup</th><th>eficiência</th></tr>
+  <tr><td class="l">sequencial</td><td>1</td><td>43,25</td><td>1,00</td><td>100%</td></tr>
+  <tr><td class="l">paralela</td><td>1</td><td>40,53</td><td>1,07</td><td>107%</td></tr>
+  <tr><td class="l">paralela</td><td>2</td><td>22,43</td><td>1,93</td><td>96%</td></tr>
+  <tr><td class="l">paralela</td><td>4</td><td>13,89</td><td>3,11</td><td>78%</td></tr>
+  <tr><td class="l">paralela</td><td>8</td><td>10,79</td><td><b>4,01</b></td><td>50%</td></tr>
+  <tr><td class="l">paralela</td><td>16</td><td>15,24</td><td>2,84</td><td>18%</td></tr>
+</table>
+</div>
+</div>
+
+<div class="destaque"><b>Com 1000 pessoas, a versão paralela é mais lenta.</b> O cálculo inteiro leva cerca de 4 microssegundos.
+Abrir as regiões paralelas, acordar as threads e esperar na barreira custa mais do que isso. Com 16 threads o custo é ainda maior, porque há mais threads para sincronizar.</div>
+<p>Para medir o ganho real, os mesmos dados foram repetidos 10 000 vezes (<code>./cv_openmp pessoas.txt 10000</code>).
+Repetir multiplica todas as frequências pelo mesmo número, então <b>média, desvio e CV não mudam</b> (o programa confere isso). Só o trabalho aumenta.
+Com 10 milhões de pessoas, o paralelo chega a <b>4× com 8 threads</b>. Ele não chega a 8× porque cada pessoa exige pouquíssima conta (uma divisão e um incremento):
+o gargalo passa a ser trazer os dados da memória RAM, e não o processador, como na aula 005.
+Com 16 threads o tempo piora: as threads extras são do hyper-threading (dividem o mesmo núcleo físico) e disputam a mesma memória, então só acrescentam custo de sincronização.
+Os tempos foram medidos dentro do Docker no Windows, que divide a máquina com o sistema. No laboratório (Linux direto) a variação deve ser menor.</p>
+
+<div class="pq">
+<b>c) Teste dos tipos de paralelização</b> (<code>speedup_tipos.cpp</code>): a mesma soma de 10 milhões de estaturas feita de 7 jeitos.
+O sequencial levou 7,87 ms. A tabela mostra o speedup, e * indica resultado errado.
+<table>
+  <tr><th class="l">versão \ threads</th><th>1</th><th>2</th><th>4</th><th>8</th><th>16</th><th class="l">resultado</th></tr>
+  <tr><td class="l">sem proteção</td><td>1,02</td><td>1,80*</td><td>3,41*</td><td>6,46*</td><td>1,00*</td><td class="l ruim">ERRADO</td></tr>
+  <tr><td class="l">critical</td><td>0,15</td><td>0,03</td><td>0,01</td><td>0,01</td><td>0,00</td><td class="l">certo</td></tr>
+  <tr><td class="l">atomic</td><td>0,18</td><td>0,05</td><td>0,02</td><td>0,01</td><td>0,01</td><td class="l">certo</td></tr>
+  <tr><td class="l">reduction static</td><td>0,89</td><td>1,86</td><td>3,34</td><td><b>7,74</b></td><td>5,24</td><td class="l">certo</td></tr>
+  <tr><td class="l">reduction dynamic</td><td>0,21</td><td>0,08</td><td>0,06</td><td>0,05</td><td>0,05</td><td class="l">certo</td></tr>
+  <tr><td class="l">reduction guided</td><td>0,95</td><td>1,87</td><td>3,40</td><td>5,78</td><td>6,42</td><td class="l">certo</td></tr>
+</table>
+<ul>
+  <li><b>Sem proteção</b>: é rápido, mas a soma sai <b>errada</b> com 2 ou mais threads. É a condição de corrida: duas threads leem o mesmo valor e uma soma se perde.</li>
+  <li><b>critical</b> e <b>atomic</b>: dão a soma certa, mas cada uma das 10 milhões de iterações vira uma fila. Ficam até 100× mais lentos que o sequencial, e pioram com mais threads.
+      O atomic é um pouco melhor que o critical porque usa uma instrução do próprio processador.</li>
+  <li><b>reduction</b>: é a única opção certa <b>e</b> rápida, porque cada thread soma na sua cópia e só há uma junção no final.
+      O <code>schedule(static)</code> é o melhor aqui, já que todas as iterações custam o mesmo.
+      O <code>dynamic</code> (pedaços de 1 iteração) passa mais tempo pegando o próximo índice da fila do que somando.
+      O <code>guided</code> fica perto do static porque começa com pedaços grandes.</li>
+</ul>
+</div>
+
+<h2>5. Conclusão</h2>
+<p>Os laços que passam por todas as pessoas (menor/maior e frequências) foram paralelizados com reduction e com contagem local mais critical.
+As somas da média e do desvio usam <code>reduction(+)</code>. O resultado (CV da estatura = <b>6,05%</b>, CV do peso = <b>18,56%</b>) é idêntico ao da versão sequencial com qualquer número de threads.
+Com os 1000 dados do enunciado, o paralelismo não compensa, porque o custo de criar e sincronizar threads é maior que o cálculo.
+Com um volume grande de dados, o speedup chegou a 4× no cálculo do CV e a 7,7× na soma com reduction.
+Entre os mecanismos de sincronização, a reduction é a escolha certa para somas: o critical e o atomic garantem a corretude, mas transformam o laço numa fila.</p>
+
+<p style="font-size:9pt;color:#555">Como rodar: <code>make</code> (compila e cria <code>pessoas.txt</code>) · <code>make rodar</code> (1000 pessoas) · <code>make grande</code> (10 milhões) · <code>make tipos</code> (teste dos tipos).</p>
+</body>
+</html>

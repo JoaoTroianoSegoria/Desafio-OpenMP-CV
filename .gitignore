@@ -1,0 +1,6 @@
+# executáveis gerados pelo Makefile
+gerar_dados
+cv_openmp
+speedup_tipos
+*.exe
+*.o
