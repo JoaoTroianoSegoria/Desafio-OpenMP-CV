@@ -2,6 +2,8 @@
 
 Programação Paralela (CCO085) · IESB · Prof. Rodrigo Gonçalves
 
+**Alunos:** João Otavio Troiano Segoria e Bruno Nóbrega Souza
+
 O programa calcula o **coeficiente de variação** da estatura e do peso de 1000 pessoas, com os dados agrupados em classes de **8 cm** e **4 kg**. Os laços de cálculo são paralelizados com OpenMP.
 
 ## Arquivos
